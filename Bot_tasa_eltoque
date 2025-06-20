@@ -4,23 +4,24 @@ import telebot
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# ── CONFIGURACIÓN ───────────────────────────────────────────────────────────
-BOT_TOKEN = "7647499610:AAF56-5dp1OAQUteRyVFMcsp_CTVQcHsXzA"         # ← tu token
-ADMIN_ID  = 7907625643                  # ← tu ID Telegram
-INTERVALO_MINUTOS = 60                  # scraping + envío cada hora
-URL = "https://eltoque.com/precio-del-dolar-en-el-mercado-informal-en-cuba-hoy"
+# ── CONFIG ──────────────────────────────────────────────────────────────────
+BOT_TOKEN = "7647499610:AAF56-5dp1OAQUteRyVFMcsp_CTVQcHsXzA"      # ← pon tu token antes de subir
+ADMIN_ID  = 7907625643
+INTERVALO_MINUTOS = 60
 
-# ── BOT & PATRÓN ────────────────────────────────────────────────────────────
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
+URL = "https://eltoque.com/precio-del-dolar-en-el-mercado-informal-en-cuba-hoy"
 PATRON = re.compile(r"1\s+(USD|EUR|MLC|CAD)\s+(\d+(?:[.,]\d+)?)\s+CUP", re.IGNORECASE)
 
-# ── FICHERO DE GRUPOS ───────────────────────────────────────────────────────
 GROUPS_FILE = "groups.json"
+if not os.path.exists(GROUPS_FILE):
+    with open(GROUPS_FILE, "w") as f:
+        json.dump([], f)
 
+# ── BOT ─────────────────────────────────────────────────────────────────────
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
+
+# ── UTILIDADES PARA GRUPOS ─────────────────────────────────────────────────
 def cargar_grupos() -> list:
-    if not os.path.exists(GROUPS_FILE):
-        with open(GROUPS_FILE, "w") as f:
-            json.dump([], f)
     with open(GROUPS_FILE) as f:
         return json.load(f)
 
@@ -28,14 +29,22 @@ def guardar_grupos(lst: list):
     with open(GROUPS_FILE, "w") as f:
         json.dump(lst, f, indent=2)
 
-# ── SCRAPER ─────────────────────────────────────────────────────────────────
+def registrar_grupo_si_es_nuevo(chat_id):
+    if str(chat_id).startswith("-"):
+        grupos = cargar_grupos()
+        if chat_id not in grupos:
+            grupos.append(chat_id)
+            guardar_grupos(grupos)
+            logging.info(f"Nuevo grupo registrado: {chat_id}")
+
+# ── SCRAPING Y TEXTO ───────────────────────────────────────────────────────
 def obtener_tasas() -> dict:
     tasas = {}
     try:
         raw = requests.get(URL, timeout=10).text
-        texto = re.sub(r"<[^>]+>", " ", raw)
-        texto = re.sub(r"\s+", " ", html.unescape(texto))
-        for code, val in PATRON.findall(texto):
+        txt = re.sub(r"<[^>]+>", " ", html.unescape(raw))
+        txt = re.sub(r"\s+", " ", txt)
+        for code, val in PATRON.findall(txt):
             tasas[code.lower()] = float(val.replace(",", "."))
     except Exception as e:
         logging.error("Scraping error: %s", e)
@@ -44,7 +53,6 @@ def obtener_tasas() -> dict:
         json.dump(tasas, f, indent=2)
     return tasas
 
-# ── FORMATO Y TECLADO ───────────────────────────────────────────────────────
 def texto_tasas(t: dict) -> str:
     return (
         "💱 *TASA INFORMAL EN CUBA – elTOQUE*\n\n"
@@ -55,142 +63,128 @@ def texto_tasas(t: dict) -> str:
         f"📅 _Actualizado: {t['updated_at']}_"
     )
 
-def teclado_privado() -> InlineKeyboardMarkup:
+def teclado_priv() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup()
     kb.row(
-        InlineKeyboardButton("📊 Ver tasas", callback_data="ver_tasas"),
-        InlineKeyboardButton("🔄 Actualizar", callback_data="update_tasas")
+        InlineKeyboardButton("📊 Ver tasas",  callback_data="ver"),
+        InlineKeyboardButton("🔄 Actualizar", callback_data="upd")
     )
     return kb
 
-# ── ENVÍO AUTOMÁTICO A GRUPOS ──────────────────────────────────────────────
-def enviar_a_grupos(tasas: dict):
-    grupos = cargar_grupos()
-    for gid in grupos:
+def enviar_a_grupos(tasas):
+    for gid in cargar_grupos():
         try:
             bot.send_message(gid, texto_tasas(tasas), parse_mode="Markdown")
         except Exception as e:
-            logging.warning("No se pudo enviar al grupo %s: %s", gid, e)
+            logging.warning(f"No se pudo enviar a {gid}: {e}")
 
-# ── COMANDOS PARA USUARIOS ─────────────────────────────────────────────────
-@bot.message_handler(commands=["tasa"])
+# ── COMANDOS ───────────────────────────────────────────────────────────────
+@bot.message_handler(commands=["start", "tasa"])
 def cmd_tasa(msg):
+    registrar_grupo_si_es_nuevo(msg.chat.id)
     try:
         with open("tasas.json") as f:
-            texto = texto_tasas(json.load(f))
+            txt = texto_tasas(json.load(f))
         if msg.chat.type in ("group", "supergroup", "channel"):
-            bot.reply_to(msg, texto)
+            bot.reply_to(msg, txt)
         else:
-            bot.reply_to(msg, texto, reply_markup=teclado_privado())
+            bot.reply_to(msg, txt, reply_markup=teclado_priv())
     except FileNotFoundError:
-        bot.reply_to(msg, "⚠️ Tasas no disponibles aún. Espera unos minutos o usa /update.")
-
-@bot.message_handler(commands=["ayuda", "comandos"])
-def cmd_ayuda(msg):
-    bot.reply_to(
-        msg,
-        "📌 *Comandos*\n"
-        "• `/tasa` — Muestra la tasa actual.\n"
-        "• `/update` — (solo admin) Fuerza actualización y reenvío.\n"
-        "• `/addgroup <id>` — (admin) Añadir grupo destino.\n"
-        "• `/delgroup <id>` — (admin) Eliminar grupo.\n"
-        "• `/listgroups` — (admin) Mostrar grupos configurados."
-    )
-
-# ── COMANDOS DE ADMINISTRACIÓN DE GRUPOS ───────────────────────────────────
-def es_admin(uid): return uid == ADMIN_ID
-
-@bot.message_handler(commands=["addgroup"])
-def cmd_addgroup(msg):
-    if not es_admin(msg.from_user.id):
-        return
-    try:
-        gid = int(msg.text.split()[1])
-    except (IndexError, ValueError):
-        return bot.reply_to(msg, "⚠️ Uso: /addgroup -1001234567890")
-    grupos = cargar_grupos()
-    if gid not in grupos:
-        grupos.append(gid)
-        guardar_grupos(grupos)
-        bot.reply_to(msg, f"✅ Grupo {gid} añadido.")
-    else:
-        bot.reply_to(msg, "ℹ️ Ese grupo ya está en la lista.")
-
-@bot.message_handler(commands=["delgroup"])
-def cmd_delgroup(msg):
-    if not es_admin(msg.from_user.id):
-        return
-    try:
-        gid = int(msg.text.split()[1])
-    except (IndexError, ValueError):
-        return bot.reply_to(msg, "⚠️ Uso: /delgroup -1001234567890")
-    grupos = cargar_grupos()
-    if gid in grupos:
-        grupos.remove(gid)
-        guardar_grupos(grupos)
-        bot.reply_to(msg, f"🗑️ Grupo {gid} eliminado.")
-    else:
-        bot.reply_to(msg, "ℹ️ Ese ID no estaba registrado.")
-
-@bot.message_handler(commands=["listgroups"])
-def cmd_listgroups(msg):
-    if not es_admin(msg.from_user.id):
-        return
-    grupos = cargar_grupos()
-    if grupos:
-        lista = "\n".join([f"• `{g}`" for g in grupos])
-        bot.reply_to(msg, f"📄 *Grupos configurados:*\n{lista}", parse_mode="Markdown")
-    else:
-        bot.reply_to(msg, "📄 No hay grupos configurados.")
+        bot.reply_to(msg, "⚠️ Tasas aún no disponibles, espera unos minutos.")
 
 @bot.message_handler(commands=["update"])
 def cmd_update(msg):
-    if not es_admin(msg.from_user.id):
-        return bot.reply_to(msg, "🚫 Solo el administrador puede actualizar.")
+    if msg.from_user.id != ADMIN_ID:
+        return bot.reply_to(msg, "🚫 Solo el administrador.")
     t = obtener_tasas()
     enviar_a_grupos(t)
-    bot.reply_to(msg, "✅ Tasas actualizadas y enviadas a los grupos.")
+    bot.reply_to(msg, "✅ Tasas actualizadas y enviadas.")
 
-# ── CALLBACKS PARA BOTONES EN PRIVADO ──────────────────────────────────────
+@bot.message_handler(commands=["addgroup"])
+def add_group(msg):
+    if msg.from_user.id != ADMIN_ID:
+        return
+    try: gid = int(msg.text.split()[1])
+    except: return bot.reply_to(msg, "Uso: /addgroup -100id")
+    grupos = cargar_grupos()
+    if gid not in grupos:
+        grupos.append(gid); guardar_grupos(grupos)
+        bot.reply_to(msg, f"✅ Grupo {gid} añadido.")
+    else:
+        bot.reply_to(msg, "Ya estaba en la lista.")
+
+@bot.message_handler(commands=["delgroup"])
+def del_group(msg):
+    if msg.from_user.id != ADMIN_ID:
+        return
+    try: gid = int(msg.text.split()[1])
+    except: return bot.reply_to(msg, "Uso: /delgroup -100id")
+    grupos = cargar_grupos()
+    if gid in grupos:
+        grupos.remove(gid); guardar_grupos(grupos)
+        bot.reply_to(msg, f"🗑️ Grupo {gid} eliminado.")
+    else:
+        bot.reply_to(msg, "Ese grupo no estaba registrado.")
+
+@bot.message_handler(commands=["listgroups"])
+def list_groups(msg):
+    if msg.from_user.id != ADMIN_ID:
+        return
+    grupos = cargar_grupos()
+    if grupos:
+        bot.reply_to(msg, "📄 *Grupos:* \n" + "\n".join([f"• `{g}`" for g in grupos]), parse_mode="Markdown")
+    else:
+        bot.reply_to(msg, "📄 Sin grupos configurados.")
+
+@bot.message_handler(commands=["ayuda", "comandos"])
+def help_msg(msg):
+    bot.reply_to(
+        msg,
+        "📌 *Comandos*\n"
+        "`/tasa` – Ver tasa actual (auto-registra el grupo)\n"
+        "`/update` – (Admin) Actualiza y envía\n"
+        "`/addgroup id` – (Admin) Agrega grupo\n"
+        "`/delgroup id` – (Admin) Elimina grupo\n"
+        "`/listgroups` – (Admin) Lista grupos\n"
+        "`/ayuda` – Esta ayuda",
+        parse_mode="Markdown"
+    )
+
+# ── CALLBACKS ──────────────────────────────────────────────────────────────
 @bot.callback_query_handler(func=lambda c: True)
-def callbacks(c):
-    if c.data == "ver_tasas":
-        try:
-            with open("tasas.json") as f:
-                bot.answer_callback_query(c.id)
-                bot.edit_message_text(
-                    texto_tasas(json.load(f)),
-                    chat_id=c.message.chat.id,
-                    message_id=c.message.message_id,
-                    reply_markup=teclado_privado()
-                )
-        except:
-            bot.answer_callback_query(c.id, "⚠️ Sin datos.")
-    elif c.data == "update_tasas":
+def cb(c):
+    if c.data == "ver":
+        with open("tasas.json") as f:
+            bot.edit_message_text(
+                texto_tasas(json.load(f)),
+                chat_id=c.message.chat.id,
+                message_id=c.message.message_id,
+                reply_markup=teclado_priv()
+            )
+            bot.answer_callback_query(c.id)
+    elif c.data == "upd":
         if c.from_user.id != ADMIN_ID:
             return bot.answer_callback_query(c.id, "⛔ Solo admin.")
-        t = obtener_tasas()
-        enviar_a_grupos(t)
-        bot.answer_callback_query(c.id, "🔄 Actualizadas.")
+        t = obtener_tasas(); enviar_a_grupos(t)
         bot.edit_message_text(
             texto_tasas(t),
             chat_id=c.message.chat.id,
             message_id=c.message.message_id,
-            reply_markup=teclado_privado()
+            reply_markup=teclado_priv()
         )
+        bot.answer_callback_query(c.id, "🔄 Actualizado")
 
-# ── SCHEDULER: SCRAPING + ENVÍO AUT ⏰───────────────────────────────────────
-def tarea_programada():
-    t = obtener_tasas()
-    enviar_a_grupos(t)
+# ── SCHEDULER ──────────────────────────────────────────────────────────────
+def tarea():
+    tasas = obtener_tasas(); enviar_a_grupos(tasas)
 
 scheduler = BackgroundScheduler()
-scheduler.add_job(tarea_programada, "interval", minutes=INTERVALO_MINUTOS)
+scheduler.add_job(tarea, "interval", minutes=INTERVALO_MINUTOS)
 scheduler.start()
-tarea_programada()  # primera ejecución inmediata
+tarea()
 
-# ── ARRANQUE ───────────────────────────────────────────────────────────────
+# ── MAIN ──────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    print("🤖 BOT LISTO. Usa /tasa o añade grupos con /addgroup.")
+    print("🤖 BOT LISTO. Usa /tasa o espera la publicación automática.")
     bot.infinity_polling()
