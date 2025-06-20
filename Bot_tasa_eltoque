@@ -5,7 +5,7 @@ from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # ── CONFIGURACIÓN ───────────────────────────────────────────────────────────
-BOT_TOKEN = "AQUI_PON_TU_TOKEN"   # ← reemplázalo
+BOT_TOKEN = "7647499610:AAF56-5dp1OAQUteRyVFMcsp_CTVQcHsXzA"   # ← reemplázalo
 ADMIN_ID  = 7907625643            # tu ID de administrador
 INTERVALO_MINUTOS = 60            # cada cuánto scrapear
 
