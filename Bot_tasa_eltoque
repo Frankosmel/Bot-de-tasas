@@ -1,42 +1,36 @@
 import re, json, logging, requests, html
-from datetime import datetime, timezone
+from datetime import datetime
 import telebot
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # ── CONFIGURACIÓN ───────────────────────────────────────────────────────────
-BOT_TOKEN = "7647499610:AAF56-5dp1OAQUteRyVFMcsp_CTVQcHsXzA"   # ← reemplázalo
-ADMIN_ID  = 7907625643            # tu ID de administrador
-INTERVALO_MINUTOS = 60            # cada cuánto scrapear
-
+BOT_TOKEN = "7647499610:AAF56-5dp1OAQUteRyVFMcsp_CTVQcHsXzA"    # ← reemplaza con tu token
+ADMIN_ID  = 7907625643
+INTERVALO_MINUTOS = 60
 URL = "https://eltoque.com/precio-del-dolar-en-el-mercado-informal-en-cuba-hoy"
 
 # ── BOT ─────────────────────────────────────────────────────────────────────
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
+PATRON = re.compile(r"1\s+(USD|EUR|MLC|CAD)\s+(\d+(?:[.,]\d+)?)\s+CUP", re.IGNORECASE)
 
-# Patrón para USD, EUR, MLC, CAD
-PATRON = re.compile(
-    r"1\s+(USD|EUR|MLC|CAD)\s+(\d+(?:[.,]\d+)?)\s+CUP",
-    re.IGNORECASE
-)
-
-# ── FUNCIÓN DE SCRAPING ─────────────────────────────────────────────────────
+# ── SCRAPING ─────────────────────────────────────────────────────────────────
 def obtener_tasas() -> dict:
     tasas = {}
     try:
-        raw   = requests.get(URL, timeout=10).text
-        texto = html.unescape(re.sub(r"<[^>]+>", " ", raw))
-        texto = re.sub(r"\s+", " ", texto)
+        raw = requests.get(URL, timeout=10).text
+        texto = re.sub(r"<[^>]+>", " ", raw)
+        texto = re.sub(r"\s+", " ", html.unescape(texto))
         for code, val in PATRON.findall(texto):
             tasas[code.lower()] = float(val.replace(",", "."))
     except Exception as e:
         logging.error("Scraping error: %s", e)
-    tasas["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    tasas["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")  # hora local
     with open("tasas.json", "w") as f:
         json.dump(tasas, f, indent=2)
     return tasas
 
-# ── FORMATO Y TECLADO ───────────────────────────────────────────────────────
+# ── TEXTO Y TECLADO ─────────────────────────────────────────────────────────
 def texto_tasas(t: dict) -> str:
     return (
         "💱 *TASA INFORMAL EN CUBA – elTOQUE*\n\n"
@@ -50,24 +44,23 @@ def texto_tasas(t: dict) -> str:
 def teclado() -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup()
     kb.row(
-        InlineKeyboardButton("📊 Ver tasas",  callback_data="ver_tasas"),
+        InlineKeyboardButton("📊 Ver tasas", callback_data="ver_tasas"),
         InlineKeyboardButton("🔄 Actualizar", callback_data="update_tasas")
     )
     return kb
 
-# ── COMANDOS ────────────────────────────────────────────────────────────────
+# ── COMANDOS ─────────────────────────────────────────────────────────────────
 @bot.message_handler(commands=["tasa"])
 def cmd_tasa(msg):
     try:
         with open("tasas.json") as f:
             texto = texto_tasas(json.load(f))
-        # Si es grupo / canal => sin botones
         if msg.chat.type in ("group", "supergroup", "channel"):
             bot.reply_to(msg, texto)
-        else:  # chat privado
+        else:
             bot.reply_to(msg, texto, reply_markup=teclado())
     except:
-        bot.reply_to(msg, "⚠️ Tasas no disponibles aún. Intenta /update o espera.")
+        bot.reply_to(msg, "⚠️ Tasas no disponibles. Usa /update o espera unos minutos.")
 
 @bot.message_handler(commands=["update"])
 def cmd_update(msg):
@@ -86,47 +79,46 @@ def cmd_ayuda(msg):
     bot.reply_to(
         msg,
         "📌 *Comandos disponibles*\n"
-        "• `/tasa` — Muestra la tasa informal actual.\n"
-        "• `@TuBot /tasa` — Funciona igual en grupos.\n"
-        "• `/update` — (Solo admin) fuerza un nuevo scraping.\n"
-        "• `/ayuda` o `/comandos` — Esta ayuda.\n\n"
-        "💡 En grupos, el bot responde sin botones."
+        "• `/tasa` — Muestra la tasa actual.\n"
+        "• `@TuBot /tasa` — Funciona en grupos (sin botones).\n"
+        "• `/update` — (solo admin) Fuerza actualización.\n"
+        "• `/ayuda` o `/comandos` — Esta ayuda."
     )
 
-# ── CALLBACKS PARA BOTONES ─────────────────────────────────────────────────
-@bot.callback_query_handler(func=lambda call: True)
-def callbacks(call):
-    if call.data == "ver_tasas":
+# ── CALLBACKS DE BOTONES ─────────────────────────────────────────────────────
+@bot.callback_query_handler(func=lambda c: True)
+def callbacks(c):
+    if c.data == "ver_tasas":
         try:
             with open("tasas.json") as f:
-                bot.answer_callback_query(call.id)
+                bot.answer_callback_query(c.id)
                 bot.edit_message_text(
                     texto_tasas(json.load(f)),
-                    chat_id=call.message.chat.id,
-                    message_id=call.message.message_id,
+                    chat_id=c.message.chat.id,
+                    message_id=c.message.message_id,
                     reply_markup=teclado()
                 )
         except:
-            bot.answer_callback_query(call.id, "⚠️ Aún sin datos.")
-    elif call.data == "update_tasas":
-        if call.from_user.id != ADMIN_ID:
-            return bot.answer_callback_query(call.id, "⛔ Solo admin.")
+            bot.answer_callback_query(c.id, "⚠️ Aún sin datos.")
+    elif c.data == "update_tasas":
+        if c.from_user.id != ADMIN_ID:
+            return bot.answer_callback_query(c.id, "⛔ Solo el administrador.")
         t = obtener_tasas()
-        bot.answer_callback_query(call.id, "🔄 Tasas actualizadas.")
+        bot.answer_callback_query(c.id, "🔄 Tasas actualizadas.")
         bot.edit_message_text(
             texto_tasas(t),
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
+            chat_id=c.message.chat.id,
+            message_id=c.message.message_id,
             reply_markup=teclado()
         )
 
-# ── SCHEDULER ──────────────────────────────────────────────────────────────
-scheduler = BackgroundScheduler(timezone="UTC")
+# ── SCHEDULER ────────────────────────────────────────────────────────────────
+scheduler = BackgroundScheduler()
 scheduler.add_job(obtener_tasas, "interval", minutes=INTERVALO_MINUTOS)
 scheduler.start()
-obtener_tasas()  # primera carga
+obtener_tasas()
 
-# ── ARRANQUE ───────────────────────────────────────────────────────────────
+# ── ARRANQUE ──────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     print("🤖 BOT LISTO. Usa /tasa para probar.")
